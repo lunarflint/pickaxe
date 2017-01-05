@@ -1,0 +1,335 @@
+; pickaxe
+; Copyright (C) 2017  LunarFlint
+
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+
+format PE GUI 4.0
+
+entry _entrypoint
+
+include 'win32wx.inc'
+
+section '.data' data readable writeable
+
+	mainWcName	TCHAR 		'PICKAXE_MAIN_WIN_CLASS', 0
+	mainWc		WNDCLASSEX 	sizeof.WNDCLASSEX, CS_HREDRAW + CS_VREDRAW, MainWndProc, 0, 0, NULL, NULL, NULL, COLOR_WINDOW + 1, NULL, mainWcName, NULL
+	childWcName	TCHAR 		'PICKAXE_CHILD_WIN_CLASS', 0
+	childWc		WNDCLASSEX 	sizeof.WNDCLASSEX, CS_HREDRAW + CS_VREDRAW, ChildWndProc, 0, 0, NULL, NULL, NULL, COLOR_BTNSHADOW + 1, NULL, childWcName, NULL
+	segoeUI		LOGFONT		0, 0, 0, 0, FW_NORMAL, 0, 0, 0, ANSI_CHARSET, OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS, PROOF_QUALITY, VARIABLE_PITCH + FF_DECORATIVE, 'Segoe UI'
+	wTitle		TCHAR 		'Pickaxe', 0
+	cwTitle		TCHAR 		'Pickaxe picker', 0
+	btnC		TCHAR		'4', 0
+	btnX		TCHAR		'r', 0
+
+	genericErrTxt	TCHAR 		'Unrecoverable error', 0
+
+
+	mainWin		dd		?
+	font		dd		?
+
+	dc		dd		?
+	color		dd		?
+	capture		db		0
+
+	crossCursor	dd		?
+	arrowCursor	dd		?
+
+	colorTxt	du		'Color: #000000', 0
+	.hexPtr		=		$ - 14
+	.wordLength	=		($ - colorTxt - 2) shr 1
+
+section '.code' code readable executable
+
+	_entrypoint:
+		stdcall Main
+		invoke ExitProcess, 0
+
+	proc Main
+	_Main:
+		locals
+			msg		MSG
+			r		RECT	0, 0, 200, 70
+		endl
+
+		;fonts
+		invoke CreateFontIndirect, segoeUI
+		or eax, eax
+		jz .err
+		mov [font], eax
+
+		;cursors
+		invoke LoadCursor, NULL, IDC_CROSS
+		or eax, eax
+		jz .err
+		mov [crossCursor], eax
+		
+		invoke LoadCursor, NULL, IDC_ARROW
+		or eax, eax
+		jz .err
+		mov [arrowCursor], eax
+
+		;win classes
+		invoke GetModuleHandle, 0
+		mov [mainWc.hInstance], eax
+		mov [childWc.hInstance], eax
+
+		invoke RegisterClassEx, mainWc
+		or eax, eax
+		jz .err
+
+		invoke RegisterClassEx, childWc
+		or eax, eax
+		jz .err
+
+		;create windows
+		invoke AdjustWindowRectEx, addr r, WS_POPUP + WS_CAPTION + WS_SYSMENU, FALSE, WS_EX_TOPMOST
+		or eax, eax
+		jz .err
+
+		mov eax, [r.right]
+		mov ecx, [r.bottom]
+		sub eax, [r.left]
+		sub ecx, [r.top]
+		invoke CreateWindowEx, WS_EX_TOPMOST, mainWcName, wTitle, WS_POPUP + WS_CAPTION + WS_SYSMENU, 300, 300, eax, ecx, NULL, NULL, [mainWc.hInstance], NULL
+		mov [mainWin], eax
+		or eax, eax
+		jz .err
+
+		invoke ShowWindow, [mainWin], SW_SHOWNORMAL
+		invoke UpdateWindow, [mainWin]
+
+		@@:
+			invoke GetMessage, addr msg, NULL, 0, 0
+			or eax, eax
+			jz .quit
+			
+			invoke TranslateMessage, addr msg
+			invoke DispatchMessage, addr msg
+			jmp @b
+
+		.err:
+			invoke MessageBox, NULL, genericErrTxt, NULL, MB_ICONERROR + MB_OK
+
+		.quit:
+			invoke DeleteObject, [font]
+			ret
+	endp
+
+	proc MainWndProc hwnd, msgCode, wparam, lparam
+	_MainWndProc:
+		locals
+			r	RECT
+			ps	PAINTSTRUCT	?
+			brush	dd		?
+		endl
+
+		cmp [msgCode], 0x8000 + 0
+		je .wmUpdateText
+		cmp [msgCode], WM_SETCURSOR
+		je .wmSetCursor
+		cmp [msgCode], WM_PAINT
+		je .wmPaint
+		cmp [msgCode], WM_CREATE
+		je .wmCreate
+		cmp [msgCode], WM_DESTROY
+		je .wmDestroy
+
+		.defWndProc:
+			invoke DefWindowProc, [hwnd], [msgCode], [wparam], [lparam]
+			jmp .wndProcEnd
+
+		.wmUpdateText:
+			; convert color hex to string
+			push ebx esi
+			
+			mov cx, 55	; 55 = 'A' - 10
+			mov esi, 3
+			@@:
+				mov al, BYTE [color - 1 + esi]
+
+				movzx dx, al
+				and dx, 15
+				mov bx, 48	; 48 = '0'
+				cmp dx, 9
+				cmova bx, cx
+				add dx, bx
+				
+				shl edx, 16
+
+				movzx dx, al
+				shr dx, 4
+				mov bx, 48	; 48 = '0'
+				cmp dx, 9
+				cmova bx, cx
+				add dx, bx
+				
+				mov DWORD [colorTxt.hexPtr - 4 + 4 * esi], edx
+
+				dec esi
+			jnz @b
+
+			pop esi ebx
+
+			xor eax, eax
+			invoke InvalidateRect, [hwnd], NULL, TRUE
+			jmp .wndProcEnd
+
+		.wmSetCursor:
+			invoke SetCursor, [arrowCursor]
+			mov eax, TRUE
+			jmp .wndProcEnd
+
+		.wmPaint:
+			push ebx esi edi
+
+			invoke BeginPaint, [hwnd], addr ps
+			mov ebx, eax
+
+			mov [r.left], 65
+			mov [r.top], 0
+			mov [r.right], 200
+			mov [r.bottom], 70
+
+			invoke SelectObject, ebx, [font]
+
+			invoke DrawText, ebx, colorTxt, colorTxt.wordLength, addr r, DT_CENTER + DT_VCENTER + DT_SINGLELINE
+
+			invoke EndPaint, [hwnd], addr ps
+
+			pop edi esi ebx
+
+			xor eax, eax
+			jmp .wndProcEnd
+
+		.wmCreate:
+			push ebx
+
+			invoke CreateWindowEx, 0, childWcName, cwTitle, WS_CHILD, 5, 5, 60, 60, [hwnd], NULL, [mainWc.hInstance], NULL
+			mov ebx, eax
+			invoke ShowWindow, ebx, SW_SHOWNORMAL
+			invoke UpdateWindow, ebx
+
+			pop ebx
+			
+			jmp .defWndProc
+
+		.wmDestroy:
+			invoke PostQuitMessage, 0
+			xor eax, eax
+
+		.wndProcEnd:
+			ret
+	endp
+
+	proc ChildWndProc hwnd, msgCode, wparam, lparam
+	_ChildWndProc:
+		locals
+			r	RECT
+			ps	PAINTSTRUCT	?
+			brush	dd		?
+		endl
+
+		cmp [msgCode], WM_SETCURSOR
+		je .wmSetCursor
+		cmp [msgCode], WM_MOUSEMOVE
+		je .wmMouseMove
+		cmp [msgCode], WM_LBUTTONDOWN
+		je .wmLButtonDown
+		cmp [msgCode], WM_LBUTTONUP
+		je .wmLButtonUp
+
+		cmp [msgCode], WM_PAINT
+		je .wmPaint
+		cmp [msgCode], WM_CREATE
+		je .wmCreate
+		cmp [msgCode], WM_DESTROY
+		je .wmDestroy
+
+		.defWndProc:
+			invoke DefWindowProc, [hwnd], [msgCode], [wparam], [lparam]
+			jmp .wndProcEnd
+
+		.wmSetCursor:
+			invoke SetCursor, [crossCursor]
+			mov eax, TRUE
+			jmp .wndProcEnd
+
+		.wmMouseMove:
+			movsx eax, WORD [lparam]   ;x
+			movsx ecx, WORD [lparam+2]  ;y
+			mov [r.left], eax
+			mov [r.top], ecx
+
+			invoke ClientToScreen, [hwnd], addr r
+			invoke GetPixel, [dc], [r.left], [r.top]
+			mov [color], eax
+
+			invoke InvalidateRect, [hwnd], NULL, FALSE
+			invoke SendMessage, [mainWin], 0x8000 + 0, 0, 0
+
+			xor eax, eax
+			jmp .wndProcEnd
+
+		.wmLButtonDown:
+			mov [capture], 0xFF
+			invoke SetCapture, [hwnd]
+			xor eax, eax
+			jmp .wndProcEnd
+
+		.wmLButtonUp:
+			mov [capture], 0
+			invoke ReleaseCapture
+			xor eax, eax
+			jmp .wndProcEnd
+
+		.wmPaint:
+			push ebx esi edi
+
+			invoke GetWindowRect, [hwnd], addr r
+			mov esi, [r.right]
+			mov edi, [r.bottom]
+			sub esi, [r.left]
+			sub edi, [r.top]
+
+			invoke CreateSolidBrush, [color]
+			mov [brush], eax
+
+			invoke BeginPaint, [hwnd], addr ps
+			mov ebx, eax
+
+			invoke FillRect, ebx, addr ps.rcPaint, [brush]
+
+			invoke EndPaint, [hwnd], addr ps
+
+			invoke DeleteObject, [brush]
+
+			pop edi esi ebx
+
+			xor eax, eax
+			jmp .wndProcEnd
+
+		.wmCreate:
+			invoke GetDC, HWND_DESKTOP
+			mov [dc], eax
+
+			jmp .defWndProc
+
+		.wmDestroy:
+			invoke ReleaseDC, HWND_DESKTOP, [dc]
+			xor eax, eax
+
+		.wndProcEnd:
+			ret
+	endp
+
+section '.idata' import data readable
+	library kernel32, 	'KERNEL32.DLL', \
+		user32, 	'USER32.DLL', \
+		gdi32,		'GDI32.DLL'
+	
+	include 'api/kernel32.inc'
+	include 'api/user32.inc'
+	include 'api/gdi32.inc'
